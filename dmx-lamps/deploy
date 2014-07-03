@@ -1,0 +1,73 @@
+#!/bin/sh -xe
+#
+# Copyright (c) 2014 Citrix Systems, Inc.
+# 
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+# 
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+#
+
+#
+# Builds and deploys the stuff to control the lamps on top of the pod. On
+# Debian, requires:
+#
+# apt-get install autoconf automake gcc libtool libusb-dev libx11-dev make \
+#                 x11-xserver-utils xvfb
+
+# Compile
+
+(
+    cd libdmx
+    ./autogen.sh
+    ./configure
+    make
+)
+
+# Blacklist ftdi-sio
+
+echo "blacklist ftdi-sio" > /etc/modprobe.d/ftdi-sio-blacklist.conf
+modprobe -r ftdi-sio
+
+# Update inittab
+
+INITTAB=/etc/inittab
+T=tmp-inittab
+
+add()
+{
+    ID="$1"
+    REST="$2"
+
+    grep -q "^$ID:" $INITTAB || echo "$ID:" >> $T
+    sed -i "s%^$ID:.*%$ID:$REST%" $T
+}
+
+cat $INITTAB > $T
+
+for i in 0 1 2 3 4 5 ; do
+    add "x$i" "2345:respawn:`pwd`/run-xvfb $i"
+done
+
+add "dmx" "2345:respawn:`pwd`/libdmx/app/dmx 2>\\&1 | logger -t dmx"
+
+install -C $T $INITTAB
+telinit q
+
+rm -f $T
+
+# Restart daemons
+
+pkill -f "^/usr/bin/Xvfb" || true
+pkill -f "^`pwd`/libdmx/app/dmx" || true
+
+echo "Done!"

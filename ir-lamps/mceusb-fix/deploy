@@ -1,0 +1,45 @@
+#!/bin/sh -xe
+#
+# Copyright (c) 2014 Citrix Systems, Inc.
+# 
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+# 
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+#
+
+#
+# Uses DKMS to install patched mceusb module on Debian Wheezy. Requires:
+#
+# apt-get install dkms linux-headers-`uname -r` linux-source
+
+M=mceusb
+V=fix
+DIR=/usr/src/$M-$V
+
+mkdir -p $DIR
+cp dkms.conf Makefile $DIR
+
+tar xOjf /usr/src/linux-source-3.2.tar.bz2 \
+    linux-source-3.2/drivers/media/rc/mceusb.c > $DIR/mceusb.c
+
+(cd $DIR && patch -p1) < mceusb-transmitter-mask.patch
+
+dkms -m $M -v $V remove --all
+dkms -m $M -v $V add
+dkms -m $M -v $V build
+dkms -m $M -v $V install
+
+modprobe -r $M
+modprobe $M
+
+echo "Done!"

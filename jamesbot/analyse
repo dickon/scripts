@@ -1,0 +1,42 @@
+#!/usr/bin/python
+#
+# Copyright (c) 2014 Citrix Systems, Inc.
+# 
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+# 
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+#
+
+import glob
+import pickle
+import re
+
+parser = re.compile(r"\d{8}T\d{6}: james!james@[^:]*: (.*)$")
+
+data = {}
+
+for log_file in glob.glob("logs/xc-irc-log-*"):
+    with open(log_file, "r") as f:
+        for line in f:
+            match = parser.match(line)
+            if match:
+                message = match.groups()[0]
+                words = message.split()
+                for i in range(len(words) + 1):
+                    a = words[i - 2] if i >= 2 else None
+                    b = words[i - 1] if i >= 1 else None
+                    c = words[i] if i < len(words) else None
+                    data.setdefault(a, {}).setdefault(b, []).append(c)
+
+with open("data.pickle", "w") as f:
+    pickle.dump(data, f)

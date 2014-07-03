@@ -1,0 +1,92 @@
+#!/usr/bin/python
+#
+# Copyright (c) 2014 Citrix Systems, Inc.
+# 
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+# 
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+#
+
+# /usr/share/pyshared/irclib.py
+# /usr/share/pyshared/ircbot.py
+
+import argparse
+import ConfigParser
+import ircbot
+import pickle
+import random
+
+class Jamesbot(ircbot.SingleServerIRCBot):
+    def __init__(self, network, port, password, operator_user,
+                 operator_password, live):
+        with open("data.pickle", "r") as f:
+            self._data = pickle.load(f)
+
+        self._operator_user = operator_user
+        self._operator_password = operator_password
+
+        if live:
+            self._channel = "#xc"
+            self._nick = "jamesbot"
+        else:
+            self._channel = "#jamesbot_test"
+            self._nick = "jamesbot_test"
+
+        ircbot.SingleServerIRCBot.__init__(self,
+                                           [(network, port, password)],
+                                           self._nick,
+                                           self._nick)
+
+    def on_welcome(self, connection, event):
+        connection.join(self._channel)
+        if self._operator_user is not None:
+            connection.oper(self._operator_user, self._operator_password)
+            connection.mode(self._channel, "+o " + self._nick)
+
+    def on_pubmsg(self, connection, event):
+        if "jamesbot" in event.arguments()[0]:
+            print event.source().split("!")[0] + ": " + event.arguments()[0]
+            message = self._generate_message()
+            print self._nick + ": " + message
+            connection.privmsg(self._channel, message)
+
+    def _generate_message(self):
+        a = None
+        b = None
+        message = []
+        while True:
+            c = random.choice(self._data[a][b])
+            if a is not None:
+                message.append(a)
+            a = b
+            b = c
+            if b is None:
+                break
+        message.append(a)
+        return " ".join(message)
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--live", action="store_true")
+args = parser.parse_args()
+
+config = ConfigParser.RawConfigParser({"operator_user": None,
+                                       "operator_password": None})
+config.read("config")
+
+bot = Jamesbot(config.get("default", "network"),
+               config.getint("default", "port"),
+               config.get("default", "password"),
+               config.get("default", "operator_user"),
+               config.get("default", "operator_password"),
+               args.live)
+bot.start()

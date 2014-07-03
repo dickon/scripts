@@ -1,0 +1,145 @@
+#!/bin/sh -ex
+#
+# Copyright (c) 2013 Citrix Systems, Inc.
+# 
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+# 
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+#
+
+die()
+{
+    echo "Error: $*" >&2
+    exit 1
+}
+
+if [ $# -ne 5 ] ; then
+    cat <<EOF >&2
+Usage: $(basename $0) BRANCH BUILD_NUM FLAVOUR RELEASE_DIR USB_DEV
+
+e.g.:
+    $(basename $0) master 123456 default RELEASE_AREA/2014-01-01-Blah-Blah /dev/something 
+
+Sign a XenClient release. Requires sudo privileges and physical access to
+machine on which this script is run.
+EOF
+    exit 1
+fi
+
+BRANCH="$1"
+BUILD="$2"
+FLAVOUR="$3"
+RELEASE_DIR="$4"
+USB_DEV="$5"
+
+BUILD_NAME="cam-oeprod-$BUILD-$BRANCH"
+BUILD_DIR="$RELEASE_DIR/NOT_FOR_DISTRIBUTION/$BUILD_NAME"
+TMP_ROOT="/tmp/sign-release"
+TMP_DIR="$TMP_ROOT/$BUILD_NAME"
+OUTPUT_DIR="$RELEASE_DIR/NOT_FOR_DISTRIBUTION/production-signed"
+GIT_MIRROR="setme" # add URL for git mirror here
+
+if [ "$FLAVOUR" = "default" ] ; then
+    SUFFIX=
+else
+    SUFFIX="-$FLAVOUR"
+fi
+
+[ -d "$BUILD_DIR" ] || die "$BUILD_DIR not found"
+[ -b "$USB_DEV" ] || die "$USB_DEV not found"
+[ ! -b "${USB_DEV}1" ] || die "$USB_DEV seems to have a partition table"
+[ -d "$RELEASE_DIR" ] || die "$RELEASE_DIR not found"
+
+echo "Creating temporary directory"
+mkdir -p "$TMP_ROOT"
+mkdir "$TMP_DIR"
+cd "$TMP_DIR"
+
+echo "Cloning build-scripts.git"
+git clone "$GIT_MIRROR/build-scripts.git"
+(cd build-scripts && git checkout -q "$BUILD_NAME")
+
+echo "Copying XC-REPOSITORY file to USB stick"
+cp "$BUILD_DIR/repository$SUFFIX/packages.main/XC-REPOSITORY" .
+sudo dd if=XC-REPOSITORY "of=$USB_DEV"
+sync
+
+cat <<EOF
+
+Remove USB stick and insert into signing machine.
+On signing machine, wait for device to appear, then run:
+    ./sign-repo xc <device node for USB stick>
+Remove USB stick and insert into this machine.
+Then press return...
+
+EOF
+
+read r
+
+# Assume it gets the same device node next time round...
+for i in $(seq 1 30) ; do
+    [ -b "$USB_DEV" ] && break
+    sleep 1
+done
+
+[ -b "$USB_DEV" ] || die "USB device not found"
+
+echo "Reading XC-SIGNATURE from USB stick"
+sudo cat "$USB_DEV" | tar xvf -
+[ -r XC-SIGNATURE ] || die "XC-SIGNATURE not found"
+
+echo "Regenerating installer iso"
+mkdir mnt
+sudo mount -o loop,uid=$(id -un),gid=$(id -gn) "$BUILD_DIR/iso/installer$SUFFIX.iso" mnt
+cp -a mnt iso
+sudo umount mnt
+chmod -R a+rX,u+w iso
+rm iso/packages.main/XC-SIGNATURE
+cp XC-SIGNATURE iso/packages.main/
+VERSION="$(sed -ne 's/^version://p' XC-REPOSITORY)"
+./build-scripts/do_installer_iso.sh iso installer$SUFFIX.iso \
+    "XenClient-$VERSION"
+
+echo "Regenerating update tar"
+mkdir tar
+(cd tar && tar xf "$BUILD_DIR/update/update$SUFFIX.tar")
+[ -r tar/packages.main ] || die "tar/packages.main not found"
+rm tar/packages.main/XC-SIGNATURE
+cp XC-SIGNATURE tar/packages.main/
+(cd tar && tar --owner root --group root \
+               -cf ../update$SUFFIX.tar packages.main)
+
+echo "Copying netboot files"
+mkdir -p "$OUTPUT_DIR"
+rm -rf "$OUTPUT_DIR/repository$SUFFIX"
+cp -a "$BUILD_DIR/repository$SUFFIX" "$OUTPUT_DIR/repository$SUFFIX"
+rm "$OUTPUT_DIR/repository$SUFFIX/packages.main/XC-SIGNATURE"
+cp "XC-SIGNATURE" "$OUTPUT_DIR/repository$SUFFIX/packages.main/XC-SIGNATURE"
+
+echo "Copying installer iso"
+mkdir -p "$OUTPUT_DIR/iso"
+rm -f "$OUTPUT_DIR/iso/installer$SUFFIX.iso"
+cp "installer$SUFFIX.iso" "$OUTPUT_DIR/iso/installer$SUFFIX.iso"
+
+echo "Copying update tar"
+mkdir -p "$OUTPUT_DIR/update"
+rm -f "$OUTPUT_DIR/update/update$SUFFIX.tar"
+cp "update$SUFFIX.tar" "$OUTPUT_DIR/update/update$SUFFIX.tar"
+
+chmod -R a+rX,ug+w "$OUTPUT_DIR"
+
+echo "Removing temporary directory"
+cd
+rm -rf "$TMP_DIR"
+
+echo "Finished"

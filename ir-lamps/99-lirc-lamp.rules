@@ -1,0 +1,2 @@
+SUBSYSTEM=="lirc", KERNEL=="lirc*", ACTION=="add", ATTRS{serial}=="PH00HPT4", SYMLINK+="lirc_south"
+SUBSYSTEM=="lirc", KERNEL=="lirc*", ACTION=="add", ATTRS{serial}=="MI000Irg", SYMLINK+="lirc_north"

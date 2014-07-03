@@ -1,0 +1,7 @@
+src/dmx-head.h.in
+src/dmx-tail.h
+src/prototypes.h
+src/ext_prototypes.h
+src/libdmx.c
+src/version.c
+src/project.h

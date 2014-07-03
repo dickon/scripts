@@ -1,0 +1,45 @@
+#!/bin/sh
+#
+# Copyright (c) 2014 Citrix Systems, Inc.
+# 
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+# 
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+#
+
+LAMP="$1"
+
+# Hack to make lamp default to a more interesting colour than black.
+
+case "$LAMP" in
+    0) COLOUR="#ff0000" ;;
+    1) COLOUR="#00ff00" ;;
+    2) COLOUR="#ff00ff" ;;
+    3) COLOUR="#000000" ;;
+    4) COLOUR="#777777" ;;
+    5) COLOUR="#0000ff" ;;
+    *) COLOUR="#ffff00" ;;
+esac
+
+(
+    for i in `seq 0 10` ; do
+        /usr/bin/xsetroot -display ":$LAMP" -solid "$COLOUR" && break
+        sleep 1
+    done
+) &
+
+mkdir -p "/var/run/fb$LAMP"
+
+exec /usr/bin/Xvfb -screen 0 1x1x24 \
+                   -fbdir "/var/run/fb$LAMP" \
+                   -noreset -ac ":$LAMP"

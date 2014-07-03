@@ -1,0 +1,1054 @@
+#!/usr/bin/perl
+#
+# Script to compare XenClient builds
+#
+# Copyright (c) 2014 Citrix Systems, Inc.
+# 
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+# 
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+#------------------------------------------------------------------------------
+
+use strict;
+use warnings;
+
+use Getopt::Long qw(:config bundling no_ignore_case);
+use LWP::Simple qw(get);
+
+my %config;
+my $debug = 0;
+
+#------------------------------------------------------------------------------
+
+sub main(@)
+{
+    read_options(@_);
+
+    my ($old_tag, $new_tag) = get_build_tags();
+
+    update_cached_repos(undef, [$old_tag, $new_tag]);
+
+    my @repos = get_repo_list();
+
+    my $commits = get_commits(\@repos,
+                              $old_tag,
+                              $new_tag);
+
+    my $issues = extract_issues_from_commits($commits);
+
+    fetch_issue_details($issues);
+
+    print_all(\@repos,
+              $commits,
+              $issues,
+              $old_tag,
+              $new_tag);
+}
+
+#------------------------------------------------------------------------------
+
+sub read_options(@)
+{
+    my %defaults = (mode             => "rev-list",
+                    new_branch       => "master",
+                    build_tag_prefix => "setme",
+                    git_prefix       => "setme",
+                    git_host         => "setme",
+                    git_web          => "setme",
+                    jira_project     => "setme",
+                    jira_web         => "setme",
+
+    my $mode = $defaults{mode};
+
+    $config{new_branch} = $defaults{new_branch};
+    $config{build_tag_prefix} = $defaults{build_tag_prefix};
+    $config{repo_cache_dir} = $defaults{repo_cache_dir};
+    $config{git_prefix} = $defaults{git_prefix};
+    $config{git_host} = $defaults{git_host};
+    $config{git_web} = $defaults{git_web};
+    $config{jira_project} = $defaults{jira_project};
+    $config{jira_web} = $defaults{jira_web};
+
+    GetOptions("o=s", \$config{old_build_num},
+               "n=s", \$config{new_build_num},
+               "b=s", \$config{new_branch},
+               "B=s", \$config{old_branch},
+               "p=s", \$config{build_tag_prefix},
+               "m=s", \$mode,
+               "C=s", \$config{repo_cache_dir},
+               "s",   \$config{skip_repo_cache_update},
+               "r=s", \$config{master_repo_dir},
+               "h",   \$config{html_mode},
+               "j=s", \$config{jira_tool}) or usage(\%defaults);
+
+    (scalar(@ARGV) == 0) or usage(\%defaults);
+
+    if (!defined($config{old_branch}))
+    {
+        $config{old_branch} = $config{new_branch};
+    }
+
+    if ($mode eq "rev-list")
+    {
+        $config{do_diff} = 0;
+        $config{colour_diff} = 0;
+    }
+    elsif ($mode eq "diff")
+    {
+        $config{do_diff} = 1;
+        $config{colour_diff} = 0;
+    }
+    elsif ($mode =~ /^colou?r-diff$/)
+    {
+        $config{do_diff} = 1;
+        $config{colour_diff} = 1;
+    }
+    else
+    {
+        usage(\%defaults);
+    }
+
+    if (!defined($config{master_repo_dir}) && !defined($config{repo_cache_dir}))
+    {
+        defined($ENV{HOME}) or die "\$HOME not defined\n";
+        $config{repo_cache_dir} = "$ENV{HOME}/REPO-CACHE";
+    }
+
+    if (defined($ENV{GIT_HOST}))
+    {
+        $config{git_host} = $ENV{GIT_HOST};
+    }
+
+    if (defined($ENV{GIT_WEB}))
+    {
+        $config{git_web} = $ENV{GIT_WEB};
+    }
+}
+
+sub usage($)
+{
+    my ($defaults) = @_;
+
+    (my $script_name = $0) =~ s|.*/||;
+
+    die <<EOF;
+$script_name
+
+command line options:
+ -o <old build number>           (default: new build minus one)
+ -n <new build number>           (default: latest build number)
+ -b <new branch>                 (default: $defaults->{new_branch})
+ -B <old branch>                 (default: same as new branch)
+ -p <prefix>                     (default: $defaults->{build_tag_prefix})
+ -m {diff|colour-diff|rev-list}  output mode
+                                 (default: $defaults->{mode})
+ -C <repo cache directory>       (default: ~/REPO-CACHE)
+ -s                              skip update of repo cache
+                                 (default: no)
+ -r <master repo dir>            use master repos directly (bypass repo cache)
+                                 (default: no)
+ -h                              html output
+                                 (default: no)
+ -j <tool>                       JIRA query tool (default: none)
+EOF
+}
+
+#------------------------------------------------------------------------------
+
+sub get_build_tags()
+{
+    # Assume that build-scripts repo contains all build tags.
+    my $repo = "xenclient/build-scripts.git";
+    my $repo_up_to_date = 0;
+
+    if (!defined($config{new_build_num}) || !defined($config{old_build_num}))
+    {
+        update_cached_repos([$repo], undef);
+        $repo_up_to_date = 1;
+
+        my $build_nums = get_all_build_nums($repo,
+                                            $config{build_tag_prefix},
+                                            $config{new_branch});
+
+        if (!defined($config{new_build_num}))
+        {
+            $config{new_build_num} = get_latest_build_num($build_nums);
+
+            debug("new_build_num: $config{new_build_num}");
+        }
+
+        if (!defined($config{old_build_num}))
+        {
+            $config{old_build_num} = get_prev_build_num($config{new_build_num},
+                                                        $build_nums);
+
+            debug("old_build_num: $config{old_build_num}");
+        }
+    }
+
+    my $old_tag = format_tag(@config{"build_tag_prefix",
+                                     "old_build_num",
+                                     "old_branch"});
+
+    my $new_tag = format_tag(@config{"build_tag_prefix",
+                                     "new_build_num",
+                                     "new_branch"});
+
+    if (!$repo_up_to_date)
+    {
+        update_cached_repos([$repo], [$old_tag, $new_tag]);
+    }
+
+    repo_has_tag($repo, $old_tag) or die "Tag '$old_tag' not found in $repo\n";
+    repo_has_tag($repo, $new_tag) or die "Tag '$new_tag' not found in $repo\n";
+
+    return $old_tag, $new_tag;
+}
+
+sub get_all_build_nums($$$)
+{
+    my ($repo, $build_tag_prefix, $branch) = @_;
+
+    my @tags = split("\n",
+                     git($repo,
+                         "tag",
+                         "-l",
+                         "$build_tag_prefix-*-$branch"));
+
+    return [sort {$a <=> $b}
+            map {s/^$build_tag_prefix-(\d+)-.*$/$1/; $_} @tags];
+}
+
+sub get_latest_build_num($)
+{
+    my ($build_nums) = @_;
+
+    return $build_nums->[-1];
+}
+
+sub get_prev_build_num($$)
+{
+    my ($curr_build_num, $build_nums) = @_;
+
+    my $prev_build_num;
+
+    foreach my $build_num (@$build_nums)
+    {
+        if ($build_num eq $curr_build_num)
+        {
+            defined($prev_build_num)
+                or die "No build number before $curr_build_num\n";
+
+            return $prev_build_num;
+        }
+
+        $prev_build_num = $build_num;
+    }
+
+    die "Build number $curr_build_num not found\n";
+}
+
+sub format_tag($$$)
+{
+    my ($build_tag_prefix, $build_num, $branch) = @_;
+
+    return join("-", $build_tag_prefix, $build_num, $branch);
+}
+
+#------------------------------------------------------------------------------
+
+sub update_cached_repos($$)
+{
+    my ($repos, $tags_to_check) = @_;
+
+    if (defined($config{master_repo_dir}))
+    {
+        (-d $config{master_repo_dir})
+            or die "Master repo directory '$config{master_repo_dir}' not ".
+                   "found\n";
+
+        return;
+    }
+
+    if ($config{skip_repo_cache_update})
+    {
+        (-d $config{repo_cache_dir})
+            or die "Repo cache dir '$config{repo_cache_dir}' not found\n";
+
+        return;
+    }
+
+    if (! -d $config{repo_cache_dir})
+    {
+        mkdir($config{repo_cache_dir})
+            or die "Failed to create directory '$config{repo_cache_dir}': $!";
+    }
+
+    if (!defined($repos))
+    {
+        $repos = [get_repo_list_from_web()];
+    }
+
+    foreach my $repo (@$repos)
+    {
+        update_cached_repo($repo, $tags_to_check);
+    }
+}
+
+sub get_repo_list_from_web()
+{
+    my $content = get($config{git_web})
+        or die "Failed to retrieve $config{git_web}\n";
+
+    my @repos;
+
+    while ($content =~ s/class='sublevel-repo'><a title='([^']+)'//)
+    {
+        push(@repos, $1);
+    }
+
+    return filter_repos(@repos);
+}
+
+sub update_cached_repo($$)
+{
+    my ($repo, $tags_to_check) = @_;
+
+    my $repo_dir = get_repo_dir($repo);
+
+    if (! -d $repo_dir)
+    {
+        debug("cache: $repo: creating");
+
+        git(undef, "clone", get_git_url_for_repo($repo), $repo_dir);
+    }
+    else
+    {
+        my $pull = 1;
+
+        if (defined($tags_to_check))
+        {
+            $pull = 0;
+
+            foreach my $tag (@$tags_to_check)
+            {
+                if (!repo_has_tag($repo, $tag))
+                {
+                    $pull = 1;
+                    last;
+                }
+            }
+        }
+
+        if ($pull)
+        {
+            debug("cache: $repo: updating");
+
+            git($repo, "pull", "-q");
+        }
+        else
+        {
+            debug("cache: $repo: already up-to-date");
+        }
+    }
+}
+
+sub get_git_url_for_repo($)
+{
+    my ($repo) = @_;
+
+    return "git://$config{git_host}/$repo";
+}
+
+#------------------------------------------------------------------------------
+
+sub get_commits($$$)
+{
+    my ($repos, $old_tag, $new_tag) = @_;
+
+    my %commits;
+
+    foreach my $repo (@$repos)
+    {
+        my $commits_for_repo = get_commits_for_repo($repo, $old_tag, $new_tag);
+
+        foreach my $commit (split(/(?<=\n)\n(?=commit |$)/, $commits_for_repo))
+        {
+            my $origin;
+
+            if ($commit =~ s/^(commit )</$1/)
+            {
+                $origin = "old";
+            }
+            elsif ($commit =~ s/^(commit )>/$1/)
+            {
+                $origin = "new";
+            }
+            else
+            {
+                die "Unexpected commit message for repo $repo: $commit\n";
+            }
+
+            push(@{$commits{$repo}->{$origin}}, $commit);
+        }
+    }
+
+    return \%commits;
+}
+
+sub get_commits_for_repo($$$)
+{
+    my ($repo, $old_tag, $new_tag) = @_;
+
+    my $repo_has_old_tag = repo_has_tag($repo, $old_tag);
+    my $repo_has_new_tag = repo_has_tag($repo, $new_tag);
+
+    if ($repo_has_old_tag && $repo_has_new_tag)
+    {
+        # Both tags exist in repo. Return commits which only exist in old repo
+        # (marked with '<') and commits which only exist in new repo (marked
+        # with '>'). Filter out equivalent commits from each side.
+        return git($repo,
+                   "rev-list",
+                   "--left-right",
+                   "--cherry-pick",
+                   "--pretty",
+                   "$old_tag...$new_tag");
+    }
+    elsif ($repo_has_new_tag)
+    {
+        # Old tag doesn't exist in repo. Assume that repo was created after
+        # that build, so return all commits up to new tag (marked with '>').
+        my $commits = git($repo,
+                          "rev-list",
+                          "--pretty",
+                          "$new_tag");
+        $commits =~ s/^(commit )/$1>/mg;
+        return $commits;
+    }
+    elsif ($repo_has_old_tag)
+    {
+        # New tag doesn't exist in repo. Assume that repo was created after
+        # that build, so return all commits up to old tag (marked with '<').
+        my $commits = git($repo,
+                          "rev-list",
+                          "--pretty",
+                          "$old_tag");
+        $commits =~ s/^(commit )/$1</mg;
+        return $commits;
+    }
+    else
+    {
+        # Neither tag exists in repo. Don't return any commits.
+        return "";
+    }
+}
+
+sub get_diff_for_repo($$$)
+{
+    my ($repo, $old_tag, $new_tag) = @_;
+
+    # If tag doesn't exist in repo, assume that repo was created after that
+    # build, so compare with empty tree.
+    my $empty_tree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+    repo_has_tag($repo, $old_tag) or $old_tag = $empty_tree;
+    repo_has_tag($repo, $new_tag) or $new_tag = $empty_tree;
+
+    return git($repo,
+               "diff",
+               $config{colour_diff} ? "--color" : (),
+               $old_tag,
+               $new_tag);
+}
+
+sub repo_has_tag($$)
+{
+    my ($repo, $tag) = @_;
+
+    # This is _much_ quicker than 'git tag -l $tag'.
+    return git_check_status($repo,
+                            "rev-parse",
+                            "--verify",
+                            "--quiet",
+                            $tag) == 0;
+}
+
+#------------------------------------------------------------------------------
+
+sub extract_issues_from_commits($)
+{
+    my ($commits) = @_;
+
+    my %issues;
+
+    foreach my $origin ("old", "new")
+    {
+        $issues{$origin} = {};
+
+        foreach my $repo (sort keys %$commits)
+        {
+            foreach my $commit (@{$commits->{$repo}->{$origin}})
+            {
+                my $author;
+
+                foreach my $line (split/\n/, $commit)
+                {
+                    ($line =~ /^Author: (\S+)/) and $author = $1;
+
+                    while ($line =~ s/($config{jira_project}-\d+)//)
+                    {
+                        $issues{$origin}->{$1}->{authors}->{$author} = 0;
+                    }
+                }
+            }
+        }
+    }
+
+    return \%issues;
+}
+
+sub fetch_issue_details($)
+{
+    my ($issues) = @_;
+
+    defined($config{jira_tool}) or return;
+
+    my @args;
+
+    foreach my $origin ("old", "new")
+    {
+        push(@args, keys %{$issues->{$origin}});
+    }
+
+    open(my $jira, "-|", $config{jira_tool}, @args)
+        or die "Failed to run jira tool '$config{jira_tool}': $!\n";
+
+    while (my $line = <$jira>)
+    {
+        chomp($line);
+
+        my ($issue, $type, $priority, $summary) = split(/:/, $line, 4);
+
+        foreach my $origin ("old", "new")
+        {
+            if (exists($issues->{$origin}->{$issue}))
+            {
+                $issues->{$origin}->{$issue}->{type} = $type;
+                $issues->{$origin}->{$issue}->{priority} = $priority;
+                $issues->{$origin}->{$issue}->{summary} = $summary;
+            }
+        }
+    }
+
+    close($jira)
+        or die "Jira tool '$config{jira_tool}' failed: $!\n";
+}
+
+#------------------------------------------------------------------------------
+
+sub git($$@)
+{
+    my ($repo, $command, @args) = @_;
+
+    if (defined($repo))
+    {
+        chdir(get_repo_dir($repo))
+            or die "Repo directory '".get_repo_dir($repo)."' not found\n";
+    }
+
+    open(my $git, "-|", "git", $command, @args)
+        or die "Failed to run git: $!\n";
+
+    local $/;
+    my $output = <$git>;
+
+    close($git)
+        or die "Error running 'git $command @args' for repo $repo: $!\n";
+
+    return $output;
+}
+
+sub git_check_status($$@)
+{
+    my ($repo, $command, @args) = @_;
+
+    if (defined($repo))
+    {
+        chdir(get_repo_dir($repo))
+            or die "Repo directory '".get_repo_dir($repo)."' not found\n";
+    }
+
+    open(my $git, "-|", "git", $command, @args)
+        or die "Failed to run git: $!\n";
+
+    local $/;
+    my $output = <$git>;
+
+    if (!close($git))
+    {
+        ($! == 0)
+            or die "Error running 'git $command @args' for repo $repo: $!\n";
+    }
+
+    return $?;
+}
+
+sub get_repo_dir($)
+{
+    my ($repo) = @_;
+
+    if (defined($config{master_repo_dir}))
+    {
+        return "$config{master_repo_dir}/$repo";
+    }
+    else
+    {
+        $repo =~ s|^.*/||;
+        $repo =~ s|\.git$||;
+
+        return "$config{repo_cache_dir}/$repo";
+    }
+}
+
+sub get_repo_list()
+{
+    my @repos;
+
+    if (defined($config{master_repo_dir}))
+    {
+        foreach my $repo (glob("$config{master_repo_dir}/xenclient/*.git"))
+        {
+            $repo =~ s|\.git$||;
+            $repo =~ s|^.*/||;
+
+            push(@repos, "$config{git_prefix}/$repo.git");
+        }
+    }
+    else
+    {
+        foreach my $repo (glob("$config{repo_cache_dir}/*/.git"))
+        {
+            $repo =~ s|/\.git$||;
+            $repo =~ s|^.*/||;
+
+            push(@repos, "$config{git_prefix}/$repo.git");
+        }
+    }
+
+    return filter_repos(@repos);
+}
+
+sub filter_repos(@)
+{
+    my @repos = @_;
+
+    return grep(!m#^people/|/people/|/autoinstall\.git$|/build-machines\.git$|/build\.git$|/bvt\.git$#,
+                @repos);
+}
+
+#------------------------------------------------------------------------------
+
+sub print_all($$$$$)
+{
+    my ($repos, $commits, $issues, $old_tag, $new_tag) = @_;
+
+    print_header($old_tag, $new_tag);
+
+    my $num_sections = print_issues($issues);
+
+    $num_sections += print_commits_or_diffs($repos,
+                                            $commits,
+                                            $old_tag,
+                                            $new_tag);
+
+    if ($num_sections == 0)
+    {
+        print_no_differences();
+    }
+
+    print_footer();
+}
+
+#------------------------------------------------------------------------------
+
+sub print_issues($)
+{
+    my ($issues) = @_;
+
+    if (scalar(keys %{$issues->{old}}) == 0 &&
+        scalar(keys %{$issues->{new}}) == 0)
+    {
+        return 0;
+    }
+
+    print_issue_header();
+
+    foreach my $origin ("old", "new")
+    {
+        foreach my $issue (sort {compare_issues($issues, $origin, $a, $b)}
+                                keys %{$issues->{$origin}})
+        {
+            print_issue($origin, $issue, $issues->{$origin}->{$issue});
+        }
+    }
+
+    print_issue_footer();
+
+    return 1;
+}
+
+sub print_issue_header()
+{
+    if ($config{html_mode})
+    {
+        print <<EOF;
+
+<hr><h3>Issues</h3><p>
+
+<div class=\"jirabox\">
+
+<table class="jira" style="width:100%">
+EOF
+    }
+    else
+    {
+        print "".("*" x 79)."\n** Issues\n".("*" x 79)."\n\n";
+    }
+}
+
+sub print_issue_footer()
+{
+    if ($config{html_mode})
+    {
+        print <<EOF;
+</table>
+
+</div>
+
+EOF
+    }
+}
+
+sub print_issue($$$)
+{
+    my ($origin, $issue, $details) = @_;
+
+    my %priorities = (1 => "Blocker",
+                      2 => "Critical",
+                      3 => "Major",
+                      4 => "Minor",
+                      5 => "Trivial");
+
+    my $url = "$config{jira_web}/browse/$issue";
+    my $authors = join(", ", sort keys %{$details->{authors}});
+    my $type = defined($details->{type}) ? $details->{type} : "-";
+    my $summary = defined($details->{summary}) ? $details->{summary} : "-";
+
+    my $priority = "Unknown";
+    if (defined($details->{priority}) &&
+        defined($priorities{$details->{priority}}))
+    {
+        $priority = $priorities{$details->{priority}};
+    }
+
+    if ($config{html_mode})
+    {
+        my $summary_class = defined($details->{summary})
+                            ? " summaryunknown" : "";
+
+        my $priority_class = "jirapriority".lc($priority);
+
+        print <<EOF;
+<tr class="$origin">
+<td style="width:10%;"><span class="jirapriority $priority_class">$priority</span></td>
+<td style="width:15%;"><span class="jirakey"><a href="$url">$issue</a></span></td>
+<td style="width:30%;"><span class="jiraauthors">$authors</span></td>
+<td><span class="jiratype">$type</span></td>
+</tr>
+<tr class="${origin}2">
+<td colspan="4"><span class="jirasummary$summary_class">$summary</span></td>
+</tr>
+EOF
+    }
+    else
+    {
+        my $mark = ("origin" eq "old") ? "-" : "+";
+        print "$mark $url  $authors  $type\n";
+        print "$mark $summary\n\n";
+    }
+}
+
+sub compare_issues($$$$)
+{
+    my ($issues, $origin, $issue1, $issue2) = @_;
+
+    my $priority1 = $issues->{$origin}->{$issue1}->{priority};
+    my $priority2 = $issues->{$origin}->{$issue2}->{priority};
+
+    (my $num1 = $issue1) =~ s/^.*-//;
+    (my $num2 = $issue2) =~ s/^.*-//;
+
+    return (defined($priority1) &&
+            defined($priority2) &&
+            $priority1 <=> $priority2) ||
+           $num1 <=> $num2;
+}
+
+#------------------------------------------------------------------------------
+
+sub print_commits_or_diffs($$$$)
+{
+    my ($repos, $commits, $old_tag, $new_tag) = @_;
+
+    my $num_sections = 0;
+
+    foreach my $repo (@$repos)
+    {
+        if ($config{do_diff})
+        {
+            $num_sections += print_diff($repo, $old_tag, $new_tag);
+        }
+        else
+        {
+            $num_sections += print_commits($repo, $commits->{$repo});
+        }
+    }
+
+    return $num_sections;
+}
+
+sub print_diff($$$)
+{
+    my ($repo, $old_tag, $new_tag) = @_;
+
+    my $diff = get_diff_for_repo($repo, $old_tag, $new_tag);
+
+    ($diff ne "") or return 0;
+
+    print_repo_title($repo);
+
+    if ($config{html_mode})
+    {
+        print htmlise($diff, $repo, "diff")."\n\n";
+    }
+    else
+    {
+        print "$diff\n";
+    }
+
+    return 1;
+}
+
+sub print_commits($$)
+{
+    my ($repo, $commits) = @_;
+
+    (scalar(keys %$commits) > 0) or return 0;
+
+    print_repo_title($repo);
+
+    foreach my $origin ("old", "new")
+    {
+        foreach my $commit (@{$commits->{$origin}})
+        {
+            if ($config{html_mode})
+            {
+                print htmlise($commit, $repo, "commit", $origin)."\n\n";
+            }
+            else
+            {
+                my $mark = ("origin" eq "old") ? "-" : "+";
+
+                $commit =~ s/^/$mark /mg;
+
+                print "$commit\n";
+            }
+        }
+    }
+
+    return 1;
+}
+
+sub print_repo_title($)
+{
+    my ($repo) = @_;
+
+    if ($config{html_mode})
+    {
+        my $url = get_http_url_for_repo($repo);
+
+        print "<hr><h3><a href=\"$url\">$repo</a></h3><p>\n\n";
+    }
+    else
+    {
+        print "".("*" x 79)."\n** $repo\n".("*" x 79)."\n\n";
+    }
+}
+
+sub get_http_url_for_repo($)
+{
+    my ($repo) = @_;
+
+    return "$config{git_web}/cgit.cgi/$repo";
+}
+
+#------------------------------------------------------------------------------
+
+sub print_header($$)
+{
+    my ($old_tag, $new_tag) = @_;
+
+    if ($config{html_mode})
+    {
+        print <<EOF;
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<meta http-equiv="Content-Type" content="text/html;charset=utf-8" />
+<title>XenClient Build Report: $old_tag vs. $new_tag</title>
+
+<style type="text/css">
+body { color: black; background: white; }
+body { margin-left: 4%; margin-right: 4%; }
+h1 { margin-left: -3%; }
+h2,h3,h4,h5,h6 { margin-left: -1%; }
+div.jirabox { margin-bottom: 15px; }
+span.new { background: #EEFFEE; border: thin solid #99DD99; }
+span.old { background: #FFEBEB; border: thin solid #DD9999; }
+span.new, span.old { padding: 1px 4px; }
+div.new, div.old, div.grey { margin-bottom: 15px; }
+div.new { border: thin solid #99DD99; }
+div.old { border: thin solid #DD9999; }
+div.grey { border: thin solid #D0D0D0; }
+div.commit { color: black; font-family: monospace; white-space: pre; }
+div.new div.commit { background: #EEFFEE; border: 0.5em solid #EEFFEE; }
+div.old div.commit { background: #FFEBEB; border: 0.5em solid #FFEBEB; }
+div.diff { color: black; font-family: monospace;
+           background: #F7F7F7; border: 0.5em solid #F7F7F7; }
+pre { margin: 0px; }
+table.jira { border-collapse: collapse; border: thin solid #99DD99; }
+tr.new td, tr.old td { padding: 0.5em 0.5em 0em 0.5em; }
+tr.new2 td, tr.old2 td { padding: 0em 0.5em 0.5em 0.5em;
+                         border-bottom: thin solid #99DD99; }
+tr.new td, tr.new2 td { background: #EEFFEE; }
+tr.old td, tr.old2 td { background: #FFEBEB; }
+span.gituuid a:link { color: #111111; font-size: smaller; }
+span.gituuid a:visited { color: #222222; font-size: smaller; }
+span.gituuid a:hover { color: #444444; font-size: smaller; }
+span.gituuid a:active { color: #444444; font-size: smaller; }
+span.authoremail { color: gray; }
+span.dateline { color: gray; }
+span.diffline { color: green; }
+span.plusline { color: #1111AA; }
+span.minusline { color: #CC0000; }
+span.plusplusplusline { color: #1111AA; }
+span.minusminusminusline { color: #CC0000; }
+span.atatline { color: #CC9900; }
+span.jirapriority { font-size: smaller; }
+span.jirapriorityblocker { color:#FF2222; }
+span.jiraprioritycritical { color:#AA0000; }
+span.jiraprioritymajor { color:#000000; }
+span.jirapriorityminor { color:#00CC00; }
+span.jiraprioritytrivial { color:#77CC77; }
+span.jirasummaryunknown { color:#777777; }
+span.jiratype { font-size: smaller; }
+span.jiraauthors { font-size: smaller; }
+</style>
+
+</head>
+<body>
+
+<h2>XenClient Build Report</h2>
+
+<span class="posttitle">
+</span>
+<h3>
+Comparison of <span class="old">$old_tag</span> and
+<span class="new">$new_tag</span>
+</h3>
+<p>
+EOF
+    }
+    else
+    {
+        print "Comparison of $old_tag and $new_tag\n\n";
+    }
+}
+
+sub print_footer()
+{
+    if ($config{html_mode})
+    {
+        print <<EOF;
+</body>
+</html>
+EOF
+    }
+}
+
+sub print_no_differences()
+{
+    if ($config{html_mode})
+    {
+        print "\n<hr><h3>No differences</h3>\n";
+    }
+    else
+    {
+        print "No differences.\n\n";
+    }
+}
+
+#------------------------------------------------------------------------------
+
+sub htmlise($$$$)
+{
+    my ($text, $repo, $mode, $origin) = @_;
+
+    $text =~ s/&/\&amp;/g;
+    $text =~ s/</\&lt;/g;
+    $text =~ s/>/\&gt;/g;
+    $text =~ s/\r//g;
+
+    if ($mode eq "commit")
+    {
+        $text =~ s|^(commit [^\n]*)\n(.*)$|<div class="$origin"><div class="commit"><pre><span class="commitline">$1</span>\n$2</pre></div></div>|s;
+        $text =~ s|^(Date: .*)$|<span class="dateline">$1</span>|m;
+        $text =~ s|^(Author: )(.*)$|<span class="authorline">$1<span class="authorname">$2</span></span>|m;
+        $text =~ s|(<span class="authorname">)(.*)&lt;(.*)&gt;(</span>)|$1$2</span><span class="authoremail">\&lt;$3\&gt;$4|;
+        $text =~ s|($config{jira_project}-[0-9]+)|<a href="$config{jira_web}/browse/$1">$1</a>|g;
+        $text =~ s|([0-9a-f]{40})|<span class="gituuid"><a href="$config{git_web}/cgit.cgi/$repo/commit/?id=$1">$1</a></span>|g;
+    }
+    elsif ($mode eq "diff")
+    {
+        $text =~ s|^(diff .*)\n(.*)$|<div class="grey"><div class="diff"><pre><span class="diffline">$1</span>$2</pre></div></div>|s;
+        $text =~ s|^(@@ .*)$|<span class="atatline">$1</span>|mg;
+        $text =~ s|^(\+\+\+ .*)$|<span class="plusplusplusline">$1</span>|mg;
+        $text =~ s|^(\+(?:[^+].*)?)$|<span class="plusline">$1</span>|mg;
+        $text =~ s|^(--- .*)$|<span class="minusminusminusline">$1</span>|mg;
+        $text =~ s|^(-(?:[^-].*)?)$|<span class="minusline">$1</span>|mg;
+    }
+
+    return $text;
+};
+
+#------------------------------------------------------------------------------
+
+sub debug()
+{
+    $debug and print STDERR join(" ", @_)."\n";
+}
+
+#------------------------------------------------------------------------------
+
+main(@ARGV);

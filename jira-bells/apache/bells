@@ -1,0 +1,15 @@
+<VirtualHost 10.80.249.92:80>
+    ServerAdmin webmaster@localhost
+
+    DocumentRoot @BELLS_DIR@/www/
+
+    <Directory "@BELLS_DIR@/www">
+        AllowOverride None
+        AddHandler cgi-script .cgi
+        Options ExecCGI
+        Order allow,deny
+        Allow from all
+        DirectoryIndex bells.cgi
+    </Directory>
+</VirtualHost>
+
