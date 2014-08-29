@@ -2,16 +2,18 @@
 
 from urllib2 import urlopen
 from json import load
-from argparse import ArgumentParser
 from os.path import isdir, join
 from subprocess import check_call
+from sys import argv
+if len(argv) != 3:
+    print 'USAGE: replicate_github organization destination_directory'
+    print
+    print 'replicate all repos in github organization; when first seen'
+    print 'clone them, on later runs fetch'
+    exit(1)
 
-parser = ArgumentParser()
-parser.add_argument('organization', help='Github organization name')
-parser.add_argument('destination', help='Destination directory')
-args = parser.parse_args()
-for repo in load(urlopen('https://api.github.com/orgs/'+args.organization+'/repos?type=all')):
-    destd = join(args.destination, repo['name']+'.git')
+for repo in load(urlopen('https://api.github.com/orgs/'+argv[1]+'/repos?type=all')):
+    destd = join(argv[2], repo['name']+'.git')
     if not isdir(destd):
         print 'cloning to', destd
         check_call(['git', 'clone', '--bare', repo['clone_url'], destd])
