@@ -19,4 +19,4 @@ for repo in load(urlopen('https://api.github.com/orgs/'+argv[1]+'/repos?type=all
         check_call(['git', 'clone', '--bare', repo['clone_url'], destd])
     else:
         print 'fetching to', destd
-        check_call(['git', '--git-dir='+destd, 'fetch'])
+        check_call(['git', '--git-dir='+destd, 'fetch', '--all'])
