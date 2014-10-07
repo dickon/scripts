@@ -43,9 +43,12 @@ sub main(@)
                               $old_tag,
                               $new_tag);
 
-    my $issues = extract_issues_from_commits($commits);
+    my $issues = ();
+    if (defined($config{jira_project})) {
+      $issues = extract_issues_from_commits($commits);
 
-    fetch_issue_details($issues);
+      fetch_issue_details($issues);
+    }
 
     print_all(\@repos,
               $commits,
@@ -79,6 +82,7 @@ sub read_options(@)
                "r=s", \$config{master_repo_dir},
                "h",   \$config{html_mode},
 	       "v",   \$config{verbose},
+	       "J=s", \$config{jira_project},
                "j=s", \$config{jira_tool}) or usage(\%defaults);
 
     (scalar(@ARGV) == 0) or usage(\%defaults);
@@ -152,7 +156,10 @@ command line options:
                                  (default: no)
  -h                              html output
                                  (default: no)
- -j <tool>                       JIRA query tool (default: none)
+ -J <jira-project-name>          specify JIRA project name
+ -j <tool>                       JIRA query too
+ -w <git-url>                    base git URL for canonical repos
+ -v                              show verbose debug output
 EOF
 }
 
