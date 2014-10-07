@@ -83,6 +83,7 @@ sub read_options(@)
                "h",   \$config{html_mode},
 	       "v",   \$config{verbose},
 	       "J=s", \$config{jira_project},
+	       "x=s", \$config{exclude_repo_regexp},
                "j=s", \$config{jira_tool}) or usage(\%defaults);
 
     (scalar(@ARGV) == 0) or usage(\%defaults);
@@ -160,6 +161,7 @@ command line options:
  -j <tool>                       JIRA query too
  -w <git-url>                    base git URL for canonical repos
  -v                              show verbose debug output
+ -x <exclude-repo-url>           exclude repos matching this regexp
 EOF
 }
 
@@ -314,7 +316,7 @@ sub get_repo_list_from_web()
 
     while ($content =~ s/class='sublevel-repo'><a title='([^']+)'//)
     {
-        push(@repos, $1);
+        push(@repos, $1) if (!defined $config{exclude_repo_regexp} || ! ($1 =~ ${config{exclude_repo_regexp}}));
     }
 
     return filter_repos(@repos);
