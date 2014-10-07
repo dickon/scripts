@@ -35,9 +35,13 @@ sub main(@)
 
     my ($old_tag, $new_tag) = get_build_tags();
 
-    update_cached_repos(undef, [$old_tag, $new_tag]);
+    # update_cached_repos(undef, [$old_tag, $new_tag]); # what and why?
+
+    print "getting repo list\n" if $config{verbose};
 
     my @repos = get_repo_list();
+
+    print "repos @repos" if $config{verbose};
 
     my $commits = get_commits(\@repos,
                               $old_tag,
@@ -77,9 +81,9 @@ sub read_options(@)
                "p=s", \$config{build_tag_prefix},
                "m=s", \$mode,
                "C=s", \$config{repo_cache_dir},
-	       "w=s", \$config{git_web},
                "s",   \$config{skip_repo_cache_update},
                "r=s", \$config{master_repo_dir},
+	       "R=s", \$config{reference_repo},
                "h",   \$config{html_mode},
 	       "v",   \$config{verbose},
 	       "J=s", \$config{jira_project},
@@ -94,8 +98,10 @@ sub read_options(@)
     }
 
 
-    defined $config{git_web} or die "use -w to specify git servers web address";
-
+    defined $config{master_repo_dir} or die "use -r to specify git repos collection directory";
+    (-d $config{master_repo_dir}) or die "Master repo directory '$config{master_repo_dir}' not ".
+                   "found\n";
+    defined $config{reference_repo} or die "use -R to specify reference repo";
     if ($mode eq "rev-list")
     {
         $config{do_diff} = 0;
@@ -147,19 +153,18 @@ command line options:
  -n <new build number>           (default: latest build number)
  -b <new branch>                 (default: $defaults->{new_branch})
  -B <old branch>                 (default: same as new branch)
+ -r <master repo dir>            use master repos directly
+ -R <reference repo>             name of reference git repo relative to master repo dir
  -p <prefix>                     (default: $defaults->{build_tag_prefix})
  -m {diff|colour-diff|rev-list}  output mode
                                  (default: $defaults->{mode})
  -C <repo cache directory>       (default: ~/REPO-CACHE)
  -s                              skip update of repo cache
                                  (default: no)
- -r <master repo dir>            use master repos directly (bypass repo cache)
-                                 (default: no)
  -h                              html output
                                  (default: no)
  -J <jira-project-name>          specify JIRA project name
  -j <tool>                       JIRA query too
- -w <git-url>                    base git URL for canonical repos
  -v                              show verbose debug output
  -x <exclude-repo-url>           exclude repos matching this regexp
 EOF
@@ -169,8 +174,7 @@ EOF
 
 sub get_build_tags()
 {
-    # Assume that build-scripts repo contains all build tags.
-    my $repo = "xenclient/build-scripts.git";
+    my $repo = "$config{master_repo_dir}/$config{reference_repo}";
     my $repo_up_to_date = 0;
 
     if (!defined($config{new_build_num}) || !defined($config{old_build_num}))
@@ -205,7 +209,7 @@ sub get_build_tags()
     my $new_tag = format_tag(@config{"build_tag_prefix",
                                      "new_build_num",
                                      "new_branch"});
-
+    print "checking $repo for $old_tag $new_tag\n" if $config{verbose};
     if (!$repo_up_to_date)
     {
         update_cached_repos([$repo], [$old_tag, $new_tag]);
@@ -273,14 +277,7 @@ sub update_cached_repos($$)
 {
     my ($repos, $tags_to_check) = @_;
 
-    if (defined($config{master_repo_dir}))
-    {
-        (-d $config{master_repo_dir})
-            or die "Master repo directory '$config{master_repo_dir}' not ".
-                   "found\n";
-
-        return;
-    }
+    print "updated cache for $repos\n" if $config{verbsoe};
 
     if ($config{skip_repo_cache_update})
     {
@@ -296,10 +293,6 @@ sub update_cached_repos($$)
             or die "Failed to create directory '$config{repo_cache_dir}': $!";
     }
 
-    if (!defined($repos))
-    {
-        $repos = [get_repo_list_from_web()];
-    }
 
     foreach my $repo (@$repos)
     {
@@ -307,32 +300,18 @@ sub update_cached_repos($$)
     }
 }
 
-sub get_repo_list_from_web()
-{
-    my $content = get($config{git_web})
-        or die "Failed to retrieve $config{git_web}\n";
-
-    my @repos;
-
-    while ($content =~ s/class='sublevel-repo'><a title='([^']+)'//)
-    {
-        push(@repos, $1) if (!defined $config{exclude_repo_regexp} || ! ($1 =~ ${config{exclude_repo_regexp}}));
-    }
-
-    return filter_repos(@repos);
-}
-
 sub update_cached_repo($$)
 {
     my ($repo, $tags_to_check) = @_;
 
-    my $repo_dir = get_repo_dir($repo);
+    my $repo_dir = $repo;
+    print "updating cache for $repo\n" if $config{verbose};
 
     if (! -d $repo_dir)
     {
         debug("cache: $repo: creating");
 
-        git(undef, "clone", get_git_url_for_repo($repo), $repo_dir);
+        git(undef, "clone", "$config{git_master_dir}/$repo", $repo_dir);
     }
     else
     {
@@ -363,13 +342,6 @@ sub update_cached_repo($$)
             debug("cache: $repo: already up-to-date");
         }
     }
-}
-
-sub get_git_url_for_repo($)
-{
-    my ($repo) = @_;
-
-    return "git://$config{git_host}/$repo";
 }
 
 #------------------------------------------------------------------------------
@@ -478,6 +450,7 @@ sub repo_has_tag($$)
 {
     my ($repo, $tag) = @_;
 
+    print "checking $repo for $tag\n" if $config{verbose};
     # This is _much_ quicker than 'git tag -l $tag'.
     return git_check_status($repo,
                             "rev-parse",
@@ -565,11 +538,12 @@ sub git($$@)
 
     if (defined($repo))
     {
-        chdir(get_repo_dir($repo))
-            or die "Repo directory '".get_repo_dir($repo)."' not found\n";
+        chdir($repo) or die "Repo directory '$repo' not found doing $command @args\n";
+	print "running git $command @args in $repo\n" if $config{verbose};
+    } else {
+	print "running git $command @args\n" if $config{verbose};
     }
     
-    print "running git $command @args in $repo\n" if $config{verbose};
     open(my $git, "-|", "git", $command, @args)
         or die "Failed to run git: $!\n";
 
@@ -588,8 +562,7 @@ sub git_check_status($$@)
 
     if (defined($repo))
     {
-        chdir(get_repo_dir($repo))
-            or die "Repo directory '".get_repo_dir($repo)."' not found\n";
+        chdir($repo) or die "Repo directory '$repo' not found doing $command @args\n";
     }
 
     open(my $git, "-|", "git", $command, @args)
@@ -607,57 +580,19 @@ sub git_check_status($$@)
     return $?;
 }
 
-sub get_repo_dir($)
-{
-    my ($repo) = @_;
-
-    if (defined($config{master_repo_dir}))
-    {
-        return "$config{master_repo_dir}/$repo";
-    }
-    else
-    {
-        $repo =~ s|^.*/||;
-        $repo =~ s|\.git$||;
-
-        return "$config{repo_cache_dir}/$repo";
-    }
-}
-
 sub get_repo_list()
 {
     my @repos;
 
-    if (defined($config{master_repo_dir}))
+    foreach my $repo (glob("$config{master_repo_dir}/*.git"))
     {
-        foreach my $repo (glob("$config{master_repo_dir}/xenclient/*.git"))
-        {
-            $repo =~ s|\.git$||;
-            $repo =~ s|^.*/||;
-
-            push(@repos, "$config{git_prefix}/$repo.git");
-        }
-    }
-    else
-    {
-        foreach my $repo (glob("$config{repo_cache_dir}/*/.git"))
-        {
-            $repo =~ s|/\.git$||;
-            $repo =~ s|^.*/||;
-
-            push(@repos, "$config{git_prefix}/$repo.git");
-        }
+	$repo =~ s|\.git$||;
+        $repo =~ s|^.*/||;
+	
+	push(@repos, "$config{master_repo_dir}/$repo.git");
     }
 
-    return filter_repos(@repos);
-}
-
-sub filter_repos(@)
-{
-    my @repos = @_;
-
-    return grep(!m#^people/|/people/|/autoinstall\.git$|/build-machines\.git$|/build\.git$|/bvt\.git$#,
-                @repos);
+    return @repos;
 }
 
 #------------------------------------------------------------------------------
