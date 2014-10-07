@@ -60,18 +60,13 @@ sub main(@)
 sub read_options(@)
 {
     my %defaults = (mode             => "rev-list",
+		    verbose          => "",
                     new_branch       => "master");
 
-    my $mode = $defaults{mode};
+    my $mode = $defaults{mode}; # interpreted in this function rather than put into config
 
     $config{new_branch} = $defaults{new_branch};
-    $config{build_tag_prefix} = $defaults{build_tag_prefix};
-    $config{repo_cache_dir} = $defaults{repo_cache_dir};
-    $config{git_prefix} = $defaults{git_prefix};
-    $config{git_host} = $defaults{git_host};
-    $config{git_web} = $defaults{git_web};
-    $config{jira_project} = $defaults{jira_project};
-    $config{jira_web} = $defaults{jira_web};
+    $config{verbose} = $defaults{verbose};
 
     GetOptions("o=s", \$config{old_build_num},
                "n=s", \$config{new_build_num},
@@ -84,6 +79,7 @@ sub read_options(@)
                "s",   \$config{skip_repo_cache_update},
                "r=s", \$config{master_repo_dir},
                "h",   \$config{html_mode},
+	       "v",   \$config{verbose},
                "j=s", \$config{jira_tool}) or usage(\%defaults);
 
     (scalar(@ARGV) == 0) or usage(\%defaults);
@@ -564,7 +560,8 @@ sub git($$@)
         chdir(get_repo_dir($repo))
             or die "Repo directory '".get_repo_dir($repo)."' not found\n";
     }
-
+    
+    print "running git $command @args in $repo\n" if $config{verbose};
     open(my $git, "-|", "git", $command, @args)
         or die "Failed to run git: $!\n";
 
