@@ -26,7 +26,6 @@ use Getopt::Long qw(:config bundling no_ignore_case);
 use LWP::Simple qw(get);
 
 my %config;
-my $debug = 0;
 
 #------------------------------------------------------------------------------
 
@@ -1041,7 +1040,7 @@ sub htmlise($$$$)
 
 sub debug()
 {
-    $debug and print STDERR join(" ", @_)."\n";
+    $config{verbose} and print STDERR join(" ", @_)."\n";
 }
 
 #------------------------------------------------------------------------------
