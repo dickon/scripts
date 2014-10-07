@@ -60,13 +60,7 @@ sub main(@)
 sub read_options(@)
 {
     my %defaults = (mode             => "rev-list",
-                    new_branch       => "master",
-                    build_tag_prefix => "setme",
-                    git_prefix       => "setme",
-                    git_host         => "setme",
-                    git_web          => "setme",
-                    jira_project     => "setme",
-                    jira_web         => "setme",
+                    new_branch       => "master");
 
     my $mode = $defaults{mode};
 
@@ -86,6 +80,7 @@ sub read_options(@)
                "p=s", \$config{build_tag_prefix},
                "m=s", \$mode,
                "C=s", \$config{repo_cache_dir},
+	       "w=s", \$config{git_web},
                "s",   \$config{skip_repo_cache_update},
                "r=s", \$config{master_repo_dir},
                "h",   \$config{html_mode},
@@ -97,6 +92,9 @@ sub read_options(@)
     {
         $config{old_branch} = $config{new_branch};
     }
+
+
+    defined $config{git_web} or die "use -w to specify git servers web address";
 
     if ($mode eq "rev-list")
     {
