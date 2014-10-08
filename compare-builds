@@ -586,10 +586,14 @@ sub get_repo_list()
 
     foreach my $repo (glob("$config{master_repo_dir}/*.git"))
     {
-	$repo =~ s|\.git$||;
-        $repo =~ s|^.*/||;
+	if ($repo =~ $config{exclude_repo_regexp}) {
+	    print "excluding $repo\n";
+        } else {
+   	    $repo =~ s|\.git$||;
+            $repo =~ s|^.*/||;
 	
-	push(@repos, "$config{master_repo_dir}/$repo.git");
+	    push(@repos, "$config{master_repo_dir}/$repo.git");
+        }
     }
 
     return @repos;
